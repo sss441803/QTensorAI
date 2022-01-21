@@ -1,5 +1,7 @@
 *.log
 *.pyc
 __pycache__/
+Saved_Contraction_Orders/
 .ipynb_checkpoints/
 *.slurm
+*.out

@@ -4,7 +4,7 @@ import time
 
 in_channels =  1
 out_channels = 1
-kernel_size = 15
+kernel_size = 13
 
 device = 'cpu'
 if torch.cuda.is_available():
@@ -12,7 +12,7 @@ if torch.cuda.is_available():
 print(device)
 
 # Defining quantum neural network, quantum convolutioinal layer, and classical convolutional layer
-optimizer=TamakiOptimizer(wait_time=5) # If you do not want to use this, remove the optimizer keyword below. wait_time=5 is default
+optimizer=TamakiOptimizer(wait_time=7) # If you do not want to use this, remove the optimizer keyword below. wait_time=5 is default
 qconv = QConv1D(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, variational_layers=5, optimizer=optimizer).to(device)
 qnn = QNN(kernel_size, out_channels).to(device)
 conv = torch.nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size).to(device)

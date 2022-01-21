@@ -2,9 +2,11 @@ import torch
 from torch import nn
 
 from qtensor_ai.ParallelQTensor import ParallelTorchQkernelComposer, ParallelSimulator
+from qtensor.optimisation.Optimizer import DefaultOptimizer, TamakiOptimizer
 from qtensor.optimisation.TensorNet import QtreeTensorNet
-from qtensor.optimisation.Optimizer import DefaultOptimizer
 
+import os
+import pickle
         
 '''This is a drop-in replacement of linear layers.'''
 class QNN(nn.Module):
@@ -27,7 +29,7 @@ class QNN(nn.Module):
         tn = QtreeTensorNet.from_qtree_gates(com.circuit)
         
         '''peo is the tensor network contraction order'''
-        self.peo, tn = optimizer.optimize(tn)
+        self.peo = circuit_optimization(in_features, variational_layers, tn, optimizer)
         
         '''self.weight are model weights'''
         self.weight = nn.Parameter(torch.randn(out_features, in_features, variational_layers, dtype=torch.float32))
@@ -84,3 +86,57 @@ class QConv1D(nn.Module):
         output = output.reshape(n_batch, -1, self.out_channels) # (n_batch, L, out_channels) 
         output = output.permute(0,2,1) # (n_batch, out_channels, L)
         return output
+
+# Function for returning the contraction order. Searching if previously saved contraction orders exist.
+def circuit_optimization(n_qubits, variational_layers, tn, optimizer):
+    # If optimizer is Tamaki, search all folders with the higher or equal wait_time for matching circuit descriptions (n_qubits, variational_layers). This is because higher wait_time gives better optimization results.
+    if isinstance(optimizer, TamakiOptimizer):
+        matched_max_wait_time = optimizer.wait_time
+        matched_max_wait_time_dir = None
+        begin_dir = '../Saved_Contraction_Orders/Tamaki_Optimizer/'
+        end_dir = '/n_qubits_{}_variational_layers_{}.pickle'.format(n_qubits, variational_layers)
+        if os.path.isdir(begin_dir):
+            folders = os.listdir(begin_dir)
+            for folder in folders:
+                if len(folder) >= 11:
+                    if folder[:10] == 'wait_time_':
+                        folder_wait_time = int(folder[10:])
+                        if folder_wait_time >= matched_max_wait_time:
+                            potential_dir = begin_dir + folder + end_dir
+                            if os.path.isfile(potential_dir):
+                                matched_max_wait_time = folder_wait_time
+                                matched_max_wait_time_dir = potential_dir
+        if matched_max_wait_time_dir == None:
+            peo, tn = optimizer.optimize(tn)
+            new_peo_dir = begin_dir + 'wait_time_' + str(matched_max_wait_time)
+            new_peo_file_dir = new_peo_dir + end_dir
+            if not os.path.isdir(new_peo_dir):
+                os.makedirs(new_peo_dir)
+            with open(new_peo_file_dir, 'wb') as peo_dir:
+                pickle.dump(peo, peo_dir)
+                print('New contraction order, save at ', peo_dir)
+        else:
+            with open(matched_max_wait_time_dir, 'rb') as peo_dir:
+                peo = pickle.load(peo_dir)
+                print('Using previously saved contraction order at ', peo_dir)
+
+    # Searching for other optimizer types
+    else:
+        optimizer_name = type(optimizer).__name__
+        target_dir = '../Saved_Contraction_Orders/' + optimizer_name
+        end_dir = '/n_qubits_{}_variational_layers_{}.pickle'.format(n_qubits, variational_layers)
+        target_file_dir = target_dir + end_dir
+        
+        if os.path.isfile(target_file_dir):
+            with open(target_file_dir, 'rb') as peo_dir:
+                peo = pickle.load(peo_dir)
+                print('Using previously saved contraction order at ', peo_dir)
+        else:
+            if not os.path.isdir(target_dir):
+                os.makedirs(target_dir)
+            peo, tn = optimizer.optimize(tn)
+            with open(target_file_dir, 'wb') as peo_dir:
+                pickle.dump(peo, peo_dir)
+                print('New contraction order, save at ', peo_dir)
+
+    return peo
