@@ -1,6 +1,12 @@
 *.log
 *.pyc
 __pycache__/
+*__pycache__/
+dist/
+*dist/
+build/
+*build/
+*egg_info/
 Saved_Contraction_Orders/
 .ipynb_checkpoints/
 *.slurm

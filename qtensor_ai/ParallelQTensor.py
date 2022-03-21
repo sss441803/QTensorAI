@@ -1,7 +1,6 @@
-import qtensor
 import torch
 import numpy as np
-import qtree
+from .qtensor import qtree
 
 
 ###########################################################################
@@ -87,9 +86,7 @@ qtree.optimizer.Var = ParallelVar
 #   it to keep all the batches.                                      #
 ######################################################################
 
-from qtensor.tools.lazy_import import torch
-import qtree
-from qtree.utils import num_to_alpha
+from .qtensor.qtree.utils import num_to_alpha
 import numpy as np
 
 def get_einsum_expr(idx1, idx2):
@@ -121,8 +118,7 @@ def get_einsum_expr(idx1, idx2):
     str3 = ''.join(num_to_alpha(idx_to_least_idx[ii]) for ii in result_indices)
     return 'Z' + str1 + ',' + 'Z' + str2 + '->' + 'Z' + str3
 
-from qtensor.contraction_backends import ContractionBackend
-from qtensor.contraction_backends.torch import qtree2torch_tensor
+from .qtensor.contraction_backends import ContractionBackend
 
 class ParallelTorchBackend(ContractionBackend):
 
@@ -211,184 +207,12 @@ class ParallelTorchBackend(ContractionBackend):
     def get_result_data(self, result):
         return result.data
 
-    
-    
-########################################################################
-#Modifying circ2buckets in qtree.optimizer                             #
-#circ2buckets implements measurement gates M from qtree.optimizer.     #
-#Originally, M is class Gate. We now need a batch dimension, so M is   #
-#class ParallelGate with n_batch as a parameter input. We call M with  #
-#this parameter here now.                                              #
-########################################################################
-
-import functools
-import itertools
-import random
-import networkx as nx
-import qtree.operators as ops
-from qtree.optimizer import Var, Tensor
-
-from qtree.logger_setup import log
-
-random.seed(0)
-
-def circ2buckets(qubit_count, circuit, pdict={}, max_depth=None):
-    """
-    Takes a circuit in the form of list of lists, builds
-    corresponding buckets. Buckets contain Tensors
-    defining quantum gates. Each bucket
-    corresponds to a variable. Each bucket can hold tensors
-    acting on it's variable and variables with higher index.
-
-    Parameters
-    ----------
-    qubit_count : int
-            number of qubits in the circuit
-    circuit : list of lists
-            quantum circuit as returned by
-            :py:meth:`operators.read_circuit_file`
-    pdict : dict
-            Dictionary with placeholders if any parameteric gates
-            were unresolved
-
-    max_depth : int
-            Maximal depth of the circuit which should be used
-    Returns
-    -------
-    buckets : list of lists
-            list of lists (buckets)
-    data_dict : dict
-            Dictionary with all tensor data
-    bra_variables : list
-            variables of the output qubits
-    ket_variables: list
-            variables of the input qubits
-    """
-    # import pdb
-    # pdb.set_trace()
-    n_batch = circuit[0][0].gen_tensor().shape[0]
-    device = circuit[0][0].gen_tensor().device
-    
-    if max_depth is None:
-        max_depth = len(circuit)
-
-    data_dict = {}
-
-    # Let's build buckets for bucket elimination algorithm.
-    # The circuit is built from left to right, as it operates
-    # on the ket ( |0> ) from the left. We thus first place
-    # the bra ( <x| ) and then put gates in the reverse order
-
-    # Fill the variable `frame`
-    layer_variables = [Var(qubit, name=f'o_{qubit}')
-                       for qubit in range(qubit_count)]
-    current_var_idx = qubit_count
-
-    # Save variables of the bra
-    bra_variables = [var for var in layer_variables]
-
-    # Initialize buckets
-    for qubit in range(qubit_count):
-        buckets = [[] for qubit in range(qubit_count)]
-
-    # Place safeguard measurement circuits before and after
-    # the circuit
-    measurement_circ = [[ops.M(qubit, n_batch=n_batch, device=device) for qubit in range(qubit_count)]]
-
-    combined_circ = functools.reduce(
-        lambda x, y: itertools.chain(x, y),
-        [measurement_circ, reversed(circuit[:max_depth])])
-
-    # Start building the graph in reverse order
-    for layer in combined_circ:
-        for op in layer:
-            # CUSTOM
-            # Swap variables on swap gate 
-            if isinstance(op, ops.SWAP):
-                q1, q2 = op.qubits
-                _v1 = layer_variables[q1]
-                layer_variables[q1] = layer_variables[q2]
-                layer_variables[q2] = _v1
-                continue
-
-            # build the indices of the gate. If gate
-            # changes the basis of a qubit, a new variable
-            # has to be introduced and current_var_idx is increased.
-            # The order of indices
-            # is always (a_new, a, b_new, b, ...), as
-            # this is how gate tensors are chosen to be stored
-            variables = []
-            current_var_idx_copy = current_var_idx
-            min_var_idx = current_var_idx
-            for qubit in op.qubits:
-                if qubit in op.changed_qubits:
-                    variables.extend(
-                        [layer_variables[qubit],
-                         Var(current_var_idx_copy)])
-                    current_var_idx_copy += 1
-                else:
-                    variables.extend([layer_variables[qubit]])
-                min_var_idx = min(min_var_idx,
-                                  int(layer_variables[qubit]))
-
-            # fill placeholders in parameters if any
-            for par, value in op.parameters.items():
-                if isinstance(value, ops.placeholder):
-                    op._parameters[par] = pdict[value]
-
-            data_key = (op.name,
-                        hash((op.name, tuple(op.parameters.items()))))
-            # Build a tensor
-            t = Tensor(op.name, variables,
-                       data_key=data_key)
-
-            # Insert tensor data into data dict
-            data_dict[data_key] = op.gen_tensor()
-
-            # Append tensor to buckets
-            # first_qubit_var = layer_variables[op.qubits[0]]
-            buckets[min_var_idx].append(t)
-
-            # Create new buckets and update current variable frame
-            for qubit in op.changed_qubits:
-                layer_variables[qubit] = Var(current_var_idx)
-                buckets.append(
-                    []
-                )
-                current_var_idx += 1
-
-    # Finally go over the qubits, append measurement gates
-    # and collect ket variables
-    ket_variables = []
-
-    op = ops.M(0, n_batch=n_batch, device=device)  # create a single measurement gate object
-    data_key = (op.name, hash((op.name, tuple(op.parameters.items()))))
-    data_dict.update(
-        {data_key: op.gen_tensor()})
-
-    for qubit in range(qubit_count):
-        var = layer_variables[qubit]
-        new_var = Var(current_var_idx, name=f'i_{qubit}', size=2)
-        ket_variables.append(new_var)
-        # update buckets and variable `frame`
-        buckets[int(var)].append(
-            Tensor(op.name,
-                   indices=[var, new_var],
-                   data_key=data_key)
-        )
-        buckets.append([])
-        layer_variables[qubit] = new_var
-        current_var_idx += 1
-
-    return buckets, data_dict, bra_variables, ket_variables
-
-qtree.optimizer.circ2buckets = circ2buckets
 
 ########################################################################
 #Modifying gate classes to be compatible with parallelism              #
 ########################################################################
 
-from qtree.operators import placeholder, Gate, ParametricGate
+from .qtensor.qtree.operators import placeholder, ParametricGate
     
 '''Batch parallel function for implementing complex conjugate tranpose'''
 def ParallelConjT(tensor):
@@ -398,30 +222,30 @@ def ParallelConjT(tensor):
     
 class ParallelParametricGate(ParametricGate):
 
-    @classmethod
-    def dag_tensor(cls, inst):
-        return ParallelConjT(cls.gen_tensor(inst))
-
-    @classmethod
-    def dagger(cls):
-        # This thing modifies the base class itself.
-        orig = cls.gen_tensor
-        def conj_tensor(self):
-            t = orig(self)
-            return ParallelConjT(t)
-        cls.gen_tensor = conj_tensor
-        cls.__name__ += '.dag'
-        return cls 
+    def __init__(self, *qubits, **parameters):
+        self._qubits = tuple(qubits)
+        self.name = type(self).__name__
+        # supposedly unique id for an instance
+        self._parameters = parameters
+        self.is_inverse = False
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self._check_qubit_count(qubits)
+    
+    def gen_tensor(self, **parameters):
+        if len(parameters) == 0:
+            tensor = self._gen_tensor(**self._parameters)
+        else:
+            tensor = self._gen_tensor(**parameters)
+        if self.is_inverse:
+            tensor = ParallelConjT(tensor)
+        return tensor
     
     def _check_qubit_count(self, qubits):
         # fill parameters and save a copy
         filled_parameters = {}
         for par, value in self._parameters.items():
-            if isinstance(value, placeholder):
-                filled_parameters[par] = np.zeros(value.shape)
-            else:
-                filled_parameters[par] = value
-        parameters = self._parameters
+            filled_parameters[par] = value
 
         # substitute parameters by filled parameters
         # to evaluate tensor shape
@@ -439,40 +263,39 @@ class ParallelParametricGate(ParametricGate):
                     self.name, len(qubits), n_qubits))
             
     def __str__(self):
+        # We will not print parameters such as n_batch and device because they are not gate parameters, but rather model parameters
+        self_params_no_device = dict(filter(lambda key_value: key_value[0] not in ['n_batch', 'device', 'is_placeholder'], self._parameters.items()))
         par_str = (",".join("{}={}".format(
             param_name,
             '?.??' if isinstance(param_value, placeholder)
             else '{:.2f}'.format(float(param_value[0])))
                             for param_name, param_value in
-                            sorted(self._parameters.items(),
+                            sorted(self_params_no_device.items(),
                                    key=lambda pair: pair[0])))
 
         return ("{}".format(self.name) + "[" + par_str + "]" +
                 "({})".format(','.join(map(str, self._qubits))))
     
-class ParallelGate(Gate):
+class ParallelGate(ParametricGate):
     
     def __init__(self, *qubits, **parameters):
         self._qubits = tuple(qubits)
-        # supposedly unique id for an instance
-        self._parameters = parameters
-        self._check_qubit_count(qubits)
         self.name = type(self).__name__
-    
-    @classmethod
-    def dag_tensor(cls, inst):
-        return ParallelConjT(cls.gen_tensor(inst))
-
-    @classmethod
-    def dagger(cls):
-        # This thing modifies the base class itself.
-        orig = cls.gen_tensor
-        def conj_tensor(self):
-            t = orig(self)
-            return ParallelConjT(t)
-        cls.gen_tensor = conj_tensor
-        cls.__name__ += '.dag'
-        return cls 
+        # supposedly unique id for an instance
+        self.is_inverse = False
+        self._parameters = parameters
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self._check_qubit_count(qubits)
+        
+    def gen_tensor(self, **parameters):
+        if len(parameters) == 0:
+            tensor = self._gen_tensor(**self._parameters)
+        else:
+            tensor = self._gen_tensor(**parameters)
+        if self.is_inverse:
+            tensor = ParallelConjT(tensor)
+        return tensor
     
     def _check_qubit_count(self, qubits):
         ''' n_qubits has an additional -1 compared to non-parallel implementation,
@@ -497,7 +320,7 @@ class ParallelGate(Gate):
 #factory 'ParallelTorchFactory'                                        #
 ########################################################################
     
-from qtensor.OpFactory import torch_j_exp
+from .qtensor.OpFactory import torch_j_exp
     
 class M(ParallelGate):
     name = 'M'
@@ -506,131 +329,180 @@ class M(ParallelGate):
     Measurement gate. This is essentially the identity operator, but
     it forces the introduction of a variable in the graphical model
     """
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        #return torch.tensor([
-        #                    [1, 0],
-        #                    [0, 1]
-        #                    ]).repeat(n_batch,1,1)
-        return torch.tensor([[1, 0], [0, 1]]).to(device).repeat(n_batch, 1, 1)
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = torch.tensor([[1, 0], [0, 1]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(self._parameters['n_batch'], 1, 1)
     
 qtree.operators.M = M
     
 class H(ParallelGate):
     name = 'H'
-    _changes_qubits = (0, ) 
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        return 1/np.sqrt(2) * torch.tensor([[1,  1],
-                                            [1, -1]
-                                           ]).to(device).repeat(n_batch,1,1)
+    _changes_qubits = (0, )
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = 1/np.sqrt(2) * torch.tensor([[1,  1], [1, -1]]).to(device)
+        super().__init__(*qubits, **parameters)
+    
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(parameters['n_batch'],1,1)
     
 class Z(ParallelGate):
     name = 'Z'
     _changes_qubits = tuple()
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        return torch.tensor([1, -1]).to(device).repeat(n_batch,1)
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = torch.tensor([1, -1]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(self._parameters['n_batch'],1)
 
 class X(ParallelGate):
     name = 'X'
     _changes_qubits = (0, )
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        return torch.tensor([
-            [0, 1],
-            [1, 0]
-        ]).to(device).repeat(n_batch,1,1)
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = torch.tensor([[0, 1], [1, 0]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(self._parameters['n_batch'],1,1)
 
 class Y(ParallelGate):
     name = 'Y'
     _changes_qubits = (0, )
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        return torch.tensor([
-            [0, -1j],
-            [1j, 0]
-        ]).to(device).repeat(n_batch,1,1)
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = torch.tensor([[0, -1j], [1j, 0]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(self._parameters['n_batch'],1,1)
 
 class cX(ParallelGate):
     name = 'cX'
     _changes_qubits=(1, )
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        return torch.tensor([[[1., 0.],
-                              [0., 1.]],
-                             [[0., 1.],
-                              [1., 0.]]]).to(device).repeat(n_batch,1,1,1)
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = torch.tensor([[[1., 0.],
+                                         [0., 1.]],
+                                        [[0., 1.],
+                                         [1., 0.]]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(self._parameters['n_batch'],1,1,1)
     
 class cZ(ParallelGate):
     name = 'cZ'
     _changes_qubits = tuple()
-    def gen_tensor(self):
-        n_batch = self.parameters['n_batch']
-        device = self.parameters['device']
-        return torch.tensor([[1, 1],
-                             [1, -1]
-                            ]).to(device).repeat(n_batch,1,1)
+
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.tensor = torch.tensor([[1, 1], [1, -1]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
+        return self.tensor.repeat(self._parameters['n_batch'],1,1)
     
 class ZZ(ParallelParametricGate):
     name = 'ZZ'
     _changes_qubits=tuple()
     parameter_count=1
-    def gen_tensor(self):
+    
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.t = torch.tensor([[-1, +1],[+1, -1]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
         alpha = self.parameters['alpha']
         device = alpha.device
-        tensor = torch.tensor([
-            [-1, +1],
-            [+1, -1]
-        ]).to(device)
-        return torch_j_exp(1j*alpha.unsqueeze(1)[:,None]*tensor*np.pi/2)
+        return torch_j_exp(1j*alpha.unsqueeze(1)[:,None]*self.t*np.pi/2)
     
 class ZPhase(ParallelParametricGate):
     name = 'ZPhase'
     _changes_qubits = tuple()
     parameter_count = 1
 
-    @staticmethod
-    def _gen_tensor(**parameters):
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.t = torch.tensor([0, 1]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
         """Rotation along Z axis"""
         alpha = parameters['alpha']
-        device = alpha.device
-        t_ = torch.tensor([0, 1]).to(device)
-        return torch_j_exp(1j*t_*np.pi*alpha.unsqueeze(1))
+        return torch_j_exp(1j*self.t*np.pi*alpha.unsqueeze(1))
     
 class YPhase(ParallelParametricGate):
     name = 'YPhase'
     parameter_count = 1
     _changes_qubits = (0, )
 
-    @staticmethod
-    def _gen_tensor(**parameters):
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.ct = torch.tensor([[1,0],[0,1]]).to(device)
+            self.st = torch.tensor([[0,-1],[1,0]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
         """Rotation along Y axis"""
         alpha = parameters['alpha']
-        device = alpha.device
-        c = torch.cos(np.pi * alpha / 2).unsqueeze(1)[:,None]*torch.tensor([[1,0],[0,1]]).to(device)
-        s = torch.sin(np.pi * alpha / 2).unsqueeze(1)[:,None]*torch.tensor([[0, -1],[1,0]]).to(device)
-        g = torch_j_exp(1j * np.pi * alpha / 2).unsqueeze(1)[:,None]
-        return g*(c + s)
+        c = torch.cos(np.pi * alpha / 2).unsqueeze(1)[:,None]*self.ct
+        s = torch.sin(np.pi * alpha / 2).unsqueeze(1)[:,None]*self.st
+        #g = torch_j_exp(1j * np.pi * alpha / 2).unsqueeze(1)[:,None]
+        #return g*(c + s)
+        return c+s
     
 class XPhase(ParallelParametricGate):
     name = 'XPhase'
     _changes_qubits = (0, )
     parameter_count = 1
 
-    @staticmethod
-    def _gen_tensor(**parameters):
+    def __init__(self, *qubits, **parameters):
+        device = parameters['device']
+        is_placeholder = parameters['is_placeholder']
+        if not is_placeholder:
+            self.ct = torch.tensor([[1,0],[0,1]]).to(device)
+            self.st = torch.tensor([[0, -1j], [-1j, 0]]).to(device)
+        super().__init__(*qubits, **parameters)
+
+    def _gen_tensor(self, **parameters):
         """Rotation along X axis"""
         alpha = parameters['alpha']
-        device = alpha.device
-        c = torch.cos(np.pi*alpha/2).unsqueeze(1)[:,None]*torch.tensor([[1,0],[0,1]]).to(device)
-        s = torch.sin(np.pi*alpha/2).unsqueeze(1)[:,None]*torch.tensor([[0, -1j], [-1j, 0]]).to(device)
+        c = torch.cos(np.pi*alpha/2).unsqueeze(1)[:,None]*self.ct
+        s = torch.sin(np.pi*alpha/2).unsqueeze(1)[:,None]*self.st
         g = torch_j_exp(1j*np.pi*alpha/2).unsqueeze(1)[:,None]
         return g*c + g*s
     
@@ -652,11 +524,26 @@ ParallelTorchFactory.cX = cX
 #Defining parallel circuit composers.                                  #
 ########################################################################
 
-from qtensor.OpFactory import QtreeBuilder
-from qtensor.CircuitComposer import CircuitComposer
+from .qtensor.OpFactory import QtreeBuilder
+from .qtensor.CircuitComposer import CircuitComposer
 
 class ParallelTorchBuilder(QtreeBuilder):
     operators = ParallelTorchFactory
+
+    def inverse(self):
+
+        def dagger_gate(gate):
+            if hasattr(gate, '_parameters'):
+                params = gate._parameters
+            else:
+                params = {}
+            new = type(gate)(*gate._qubits, **params)
+            new.name = gate.name + '+'
+            new.is_inverse = True
+            return new
+
+        self._circuit = list(reversed([dagger_gate(g) for g in self._circuit]))
+
     
 class ParallelTorchQkernelComposer(CircuitComposer):
     
@@ -665,6 +552,8 @@ class ParallelTorchQkernelComposer(CircuitComposer):
         '''higher order encoding encodes the products of data points as rotation angles. Depth is N^2. 	arXiv:2011.00027'''
         self.higher_order = False
         self.device = 'cpu'
+        self.expectation_circuit_initialized = False
+        self.static_circuit = []
         super().__init__()
     
     def _get_builder(self):
@@ -675,46 +564,46 @@ class ParallelTorchQkernelComposer(CircuitComposer):
     
     def layer_of_Hadamards(self):
         for q in self.qubits:
-            self.apply_gate(self.operators.H, q, n_batch=self.n_batch, device=self.device)
+            self.apply_gate(self.operators.H, q, n_batch=self.n_batch, device=self.device, is_placeholder = self.expectation_circuit_initialized)
     
     def entangling_layer(self):
         for i in range(self.n_qubits//2):
             control_qubit = self.qubits[2*i]
             target_qubit = self.qubits[2*i+1]
-            self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device)
+            self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device, is_placeholder = self.expectation_circuit_initialized)
         for i in range((self.n_qubits+1)//2-1):
             control_qubit = self.qubits[2*i+1]
             target_qubit = self.qubits[2*i+2]
-            self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device)
+            self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device, is_placeholder = self.expectation_circuit_initialized)
         control_qubit = self.qubits[-1]
         target_qubit = self.qubits[0]
     
     def encoding_circuit(self, data):
         self.layer_of_Hadamards()
         for i, qubit in enumerate(self.qubits):
-            self.apply_gate(self.operators.ZPhase, qubit, alpha=data[:, i], device=self.device)
+            self.apply_gate(self.operators.ZPhase, qubit, alpha=data[:, i], device=self.device, is_placeholder = self.expectation_circuit_initialized)
         if self.higher_order:
             for i in range(self.n_qubits):
                 for j in range(i+1, self.n_qubits):
                     control_qubit = self.qubits[i]
                     target_qubit = self.qubits[j]
-                    self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device)
-                    self.apply_gate(self.operators.ZPhase, target_qubit, alpha=data[:, i]*data[:, j], device=self.device)
-                    self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device)
+                    self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device, is_placeholder = self.expectation_circuit_initialized)
+                    self.apply_gate(self.operators.ZPhase, target_qubit, alpha=data[:, i]*data[:, j], device=self.device, is_placeholder = self.expectation_circuit_initialized)
+                    self.apply_gate(self.operators.cX, control_qubit, target_qubit, n_batch=self.n_batch, device=self.device, is_placeholder = self.expectation_circuit_initialized)
     
     '''A single layer of rotation gates depending on trainable parameters'''
     def variational_layer(self, layer, layer_params):
         for i in range(self.n_qubits):
             qubit = self.qubits[i]
-            self.apply_gate(self.operators.YPhase, qubit, alpha=layer_params[:, i], device=self.device)
+            self.apply_gate(self.operators.YPhase, qubit, alpha=layer_params[:, i], device=self.device, is_placeholder = self.expectation_circuit_initialized)
      
     def cost_operator(self):
         #self.apply_gate(self.operators.Z, self.qubits[0], n_batch=self.n_batch)
         for qubit in self.qubits:
-            self.apply_gate(self.operators.Z, qubit, n_batch=self.n_batch, device=self.device)
+            self.apply_gate(self.operators.Z, qubit, n_batch=self.n_batch, device=self.device, is_placeholder = self.expectation_circuit_initialized)
     
     '''Building circuit that needs to be measured'''
-    def circuit(self, data, params):
+    def forward_circuit(self, data, params):
         '''data is a np.ndarray that has dimension (n_batch, n_qubits). It contains data to be encoded'''
         '''params is a np.ndarray that has dimension (n_batch, n_qubits, layers). It stores rotation angles that will be learned'''
         self.n_batch = data.shape[0]
@@ -726,21 +615,314 @@ class ParallelTorchQkernelComposer(CircuitComposer):
             self.entangling_layer()
             
     '''Building circuit whose first amplitude is the expectation value of the measured circuit wrt to the cost_operator'''
-    def energy_expectation(self, data, params):
+    def updated_expectation_circuit(self, data, params):
+        self.builder.reset()
         self.device = data.device
-        self.circuit(data, params)
+        self.forward_circuit(data, params)
         self.cost_operator()
         first_part = self.builder.circuit
         self.builder.reset()
-
-        self.circuit(data, params)
+        self.forward_circuit(data, params)
         self.builder.inverse()
         second_part = self.builder.circuit
+        self.builder.reset()
+        return first_part + second_part
 
-        self.circuit = first_part + second_part
-            
+    def expectation_circuit(self, data, params):
+        new_circuit = self.updated_expectation_circuit(data, params)
+        if len(self.static_circuit) != 0:
+            for self_op, new_op in zip(self.static_circuit, new_circuit):
+                if isinstance(self_op, ParallelParametricGate):
+                    self_op._parameters['alpha'] = new_op._parameters['alpha']
+                else:
+                    self_op._parameters['n_batch'] = new_op._parameters['n_batch']
+        else:
+            '''Initializing circuit'''
+            self.static_circuit = new_circuit
+            self.expectation_circuit_initialized = True
+
+    def name():
+        return 'Qkernel'
+
+
+
+class MetricLearningCircuitComposer(ParallelTorchQkernelComposer):
+
+    def __init__(self, n_qubits):
+        self.n_qubits = n_qubits
+        self.device = 'cpu'
+        self.expectation_circuit_initialized = False
+        self.static_circuit = []
+        super().__init__(n_qubits)
+    
+    def zz_layer(self, zz_params):
+        for i in range(self.n_qubits//2):
+            control_qubit = self.qubits[2*i]
+            target_qubit = self.qubits[2*i+1]
+            self.apply_gate(self.operators.ZZ, control_qubit, target_qubit, alpha=zz_params[:,control_qubit], device=self.device, is_placeholder = self.expectation_circuit_initialized)
+        for i in range((self.n_qubits+1)//2-1):
+            control_qubit = self.qubits[2*i+1]
+            target_qubit = self.qubits[2*i+2]
+            self.apply_gate(self.operators.ZZ, control_qubit, target_qubit, alpha=zz_params[:,control_qubit], device=self.device, is_placeholder = self.expectation_circuit_initialized)
+    
+    '''A single layer of rotation gates depending on trainable parameters'''
+    def variational_layer(self, gate, layer_params):
+        for i in range(self.n_qubits):
+            qubit = self.qubits[i]
+            self.apply_gate(gate, qubit, alpha=layer_params[:, i], device=self.device, is_placeholder = self.expectation_circuit_initialized)
+    
+    '''Building circuit that needs to be measured'''
+    def circuit(self, inputs, zz_params, y_params):
+        '''data is a np.ndarray that has dimension (n_batch, n_qubits). It contains data to be encoded'''
+        '''params is a np.ndarray that has dimension (n_batch, n_qubits, layers). It stores rotation angles that will be learned'''
+        self.n_batch = inputs.shape[0]
+        self.layers = zz_params.shape[2]
+        for layer in range(self.layers):
+            self.variational_layer(self.operators.XPhase, inputs)
+            layer_zz_params = zz_params[:, :, layer]
+            self.zz_layer(layer_zz_params)
+            layer_y_params = y_params[:, :, layer]
+            self.variational_layer(self.operators.YPhase, layer_y_params)
+        self.variational_layer(self.operators.XPhase, inputs)
+
+    '''Building circuit whose first amplitude is the expectation value of the measured circuit wrt to the cost_operator'''
+    def updated_expectation_circuit(self, inputs1, inputs2, zz_params, y_params):
+        self.builder.reset()
+        self.device = inputs1.device
+        self.circuit(inputs1, zz_params, y_params)
+        first_part = self.builder.circuit
+        self.builder.reset()
+        self.circuit(inputs2, zz_params, y_params)
+        self.builder.inverse()
+        second_part = self.builder.circuit
+        self.builder.reset()
+        return first_part + second_part
+
+    def expectation_circuit(self, inputs1, inputs2, zz_params, y_params):
+        new_circuit = self.updated_expectation_circuit(inputs1, inputs2, zz_params, y_params)
+
+        if len(self.static_circuit) != 0:
+            for self_op, new_op in zip(self.static_circuit, new_circuit):
+                if isinstance(self_op, ParallelParametricGate):
+                    self_op._parameters['alpha'] = new_op._parameters['alpha']
+                else:
+                    self_op._parameters['n_batch'] = new_op._parameters['n_batch']
+        else:
+            '''Initializing circuit'''
+            self.static_circuit = new_circuit
+            self.expectation_circuit_initialized = True
+
+    def name():
+        return 'MetricLearning'
+
+
+########################################################################
+#Defining parallel tensornetwork class                                 #
+#Modifying circ2buckets in qtree.optimizer                             #
+#circ2buckets implements measurement gates M from qtree.optimizer.     #
+#Originally, M is class Gate. We now need a batch dimension, so M is   #
+#class ParallelGate with n_batch as a parameter input. We call M with  #
+#this parameter here now.                                              #
+########################################################################
+
+import functools
+import itertools
+import random
+
+from .qtensor.qtree import operators as ops
+from .qtensor.qtree.optimizer import Var, Tensor
+from .qtensor.optimisation.TensorNet import QtreeTensorNet
+
+random.seed(0)
+
+
+class ParallelQtreeTensorNet(QtreeTensorNet):
+
+    def __init__(self, buckets, data_dict, bra_vars, ket_vars, **kwargs):
+        self.measurement_circ = None
+        self.measurement_op = None
+        super().__init__(buckets, data_dict, bra_vars, ket_vars, **kwargs)
+
+    def slice(self, slice_dict):
+        sliced_buckets = self.backend.get_sliced_buckets(
+            self.buckets, self.data_dict, slice_dict)
+        self.buckets = sliced_buckets
+        return self.buckets
+
+    @classmethod
+    def circ2buckets(cls, qubit_count, circuit, measurement_circ=None, measurement_op=None, pdict={}, max_depth=None):
+        # import pdb
+        # pdb.set_trace()
+        n_batch = circuit[0][0].gen_tensor().shape[0]
+        device = circuit[0][0].gen_tensor().device
+        
+        if max_depth is None:
+            max_depth = len(circuit)
+
+        data_dict = {}
+
+        # Let's build buckets for bucket elimination algorithm.
+        # The circuit is built from left to right, as it operates
+        # on the ket ( |0> ) from the left. We thus first place
+        # the bra ( <x| ) and then put gates in the reverse order
+
+        # Fill the variable `frame`
+        layer_variables = [Var(qubit, name=f'o_{qubit}')
+                        for qubit in range(qubit_count)]
+        current_var_idx = qubit_count
+
+        # Save variables of the bra
+        bra_variables = [var for var in layer_variables]
+
+        # Initialize buckets
+        for qubit in range(qubit_count):
+            buckets = [[] for qubit in range(qubit_count)]
+        # Place safeguard measurement circuits before and after
+        # the circuit
+        if measurement_circ == None:
+            measurement_circ = [[ops.M(qubit, n_batch=n_batch, device=device, is_placeholder=False) for qubit in range(qubit_count)]]
+        else:
+            for op in measurement_circ[0]:
+                op._parameters['n_batch'] = n_batch
+
+        combined_circ = functools.reduce(
+            lambda x, y: itertools.chain(x, y),
+            [measurement_circ, reversed(circuit[:max_depth])])
+
+        # Start building the graph in reverse order
+        for layer in combined_circ:
+            for op in layer:
+                # CUSTOM
+                # build the indices of the gate. If gate
+                # changes the basis of a qubit, a new variable
+                # has to be introduced and current_var_idx is increased.
+                # The order of indices
+                # is always (a_new, a, b_new, b, ...), as
+                # this is how gate tensors are chosen to be stored
+                variables = []
+                current_var_idx_copy = current_var_idx
+                min_var_idx = current_var_idx
+                for qubit in op.qubits:
+                    if qubit in op.changed_qubits:
+                        variables.extend(
+                            [layer_variables[qubit],
+                            Var(current_var_idx_copy)])
+                        current_var_idx_copy += 1
+                    else:
+                        variables.extend([layer_variables[qubit]])
+                    min_var_idx = min(min_var_idx,
+                                    int(layer_variables[qubit]))
+
+                # fill placeholders in parameters if any
+                for par, value in op.parameters.items():
+                    if isinstance(value, ops.placeholder):
+                        op._parameters[par] = pdict[value]
+
+                data_key = (op.name,
+                            hash((op.name, tuple(op.parameters.items()))))
+                # Build a tensor
+                t = Tensor(op.name, variables,
+                        data_key=data_key)
+
+                # Insert tensor data into data dict
+                data_dict[data_key] = op.gen_tensor()
+
+                # Append tensor to buckets
+                # first_qubit_var = layer_variables[op.qubits[0]]
+                buckets[min_var_idx].append(t)
+
+                # Create new buckets and update current variable frame
+                for qubit in op.changed_qubits:
+                    layer_variables[qubit] = Var(current_var_idx)
+                    buckets.append(
+                        []
+                    )
+                    current_var_idx += 1
+
+        # Finally go over the qubits, append measurement gates
+        # and collect ket variables
+        ket_variables = []
+
+        if measurement_op==None:
+            measurement_op = ops.M(0, n_batch=n_batch, device=device, is_placeholder=False)  # create a single measurement gate object
+        else:
+            measurement_op._parameters['n_batch'] = n_batch
+        data_key = (measurement_op.name, hash((measurement_op.name, tuple(measurement_op.parameters.items()))))
+        data_dict.update({data_key: measurement_op.gen_tensor()})
+
+        for qubit in range(qubit_count):
+            var = layer_variables[qubit]
+            new_var = Var(current_var_idx, name=f'i_{qubit}', size=2)
+            ket_variables.append(new_var)
+            # update buckets and variable `frame`
+            buckets[int(var)].append(
+                Tensor(measurement_op.name,
+                    indices=[var, new_var],
+                    data_key=data_key)
+            )
+            buckets.append([])
+            layer_variables[qubit] = new_var
+            current_var_idx += 1
+
+        return buckets, data_dict, bra_variables, ket_variables, measurement_circ, measurement_op
+
+    @classmethod
+    def from_qtree_gates(cls, qc, measurement_circ=None, measurement_op=None, **kwargs):
+        all_gates = qc
+        n_qubits = len(set(sum([g.qubits for g in all_gates], tuple())))
+        qtree_circuit = [[g] for g in qc]
+        buckets, data_dict, bra_vars, ket_vars, measurement_circ, measurement_op = cls.circ2buckets(n_qubits, qtree_circuit, measurement_circ, measurement_op)
+        tn = cls(buckets, data_dict, bra_vars, ket_vars, **kwargs)
+        return tn, measurement_circ, measurement_op
+
 ########################################################################
 #Defining parallel simulator.                                          #
 ########################################################################
+from .qtensor.Simulate import QtreeSimulator
 
-ParallelSimulator = qtensor.QtreeSimulator(backend=ParallelTorchBackend())
+class ParallelQtreeSimulator(QtreeSimulator):
+
+    def __init__(self, **kwargs):
+        self.measurement_circ = None
+        self.measurement_op = None
+        super().__init__(**kwargs)
+
+    def _create_buckets(self):
+        self.tn, self.measurement_circ, self.measurement_op = ParallelQtreeTensorNet.from_qtree_gates(self.all_gates, self.measurement_circ, self.measurement_op, backend=self.backend)
+        self.tn.backend = self.backend
+    
+    def prepare_buckets(self, qc, batch_vars=0, peo=None):
+        self._new_circuit(qc)
+        self._create_buckets()
+        # Collect free qubit variables
+        if isinstance(batch_vars, int):
+            free_final_qubits = list(range(batch_vars))
+        else:
+            free_final_qubits = batch_vars
+
+        self._set_free_qubits(free_final_qubits)
+        if peo is None:
+            self._optimize_buckets()
+            if self.max_tw:
+                if self.optimizer.treewidth > self.max_tw:
+                    raise ValueError(f'Treewidth {self.optimizer.treewidth} is larger than max_tw={self.max_tw}.')
+        else:
+            self.peo = peo
+
+        all_indices = sum([list(t.indices) for bucket in self.tn.buckets for t in bucket], [])
+        identity_map = {v.name: v for v in all_indices}
+        self.peo = [identity_map[i.name] for i in self.peo]
+
+        self._reorder_buckets()
+        slice_dict = self._get_slice_dict()
+        
+        sliced_buckets = self.tn.slice(slice_dict)
+        self.buckets = sliced_buckets
+
+    def simulate_batch(self, qc, batch_vars=0, peo=None):
+        self.prepare_buckets(qc, batch_vars, peo)
+        result = qtree.optimizer.bucket_elimination(
+            self.buckets, self.backend.process_bucket,
+            n_var_nosum=len(self.tn.free_vars)
+        )
+        return self.backend.get_result_data(result).flatten()
