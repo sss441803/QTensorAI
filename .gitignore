@@ -11,3 +11,4 @@ Saved_Contraction_Orders/
 .ipynb_checkpoints/
 *.slurm
 *.out
+qtensor_ai.egg-info/

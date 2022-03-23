@@ -5,7 +5,6 @@ import copy
 
 
 from .. import utils
-from .networkit import greedy_ordering_networkit
 
 
 class Optimizer:
@@ -41,12 +40,11 @@ class WithoutOptimizer(Optimizer):
         return peo, tensor_net
 
 
-# TODO: rename to greedy
-class GreedyOptimizer(Optimizer):
+class OrderingOptimizer(Optimizer):
     def _get_ordering_ints(self, graph, free_vars=[]):
         #mapping = {a:b for a,b in zip(graph.nodes(), reversed(list(graph.nodes())))}
         #graph = nx.relabel_nodes(graph, mapping)
-        peo_ints, path = utils.get_neighbors_peo(graph)
+        peo_ints, path = utils.get_neighbours_peo(graph)
 
         return peo_ints, path
 
@@ -54,16 +52,7 @@ class GreedyOptimizer(Optimizer):
         node_names = nx.get_node_attributes(graph, 'name')
         node_sizes = nx.get_node_attributes(graph, 'size')
         # performing ordering inplace reduces time for ordering by 60%
-        #peo, path = utils.get_neighbors_peo_vars(graph, inplace=inplace)
-
-        # this may be ugly, but it is actually pythonic:)
-        # solves two problems: possible inconsistencies in api, and missing networkit.
-        # does not introduce overhead
-
-        try:
-            peo, path = greedy_ordering_networkit(graph)
-        except:
-            peo, path = utils.get_neighbors_peo_vars(graph, inplace=inplace)
+        peo, path = utils.get_neighbours_peo_vars(graph, inplace=inplace)
 
         peo = [qtree.optimizer.Var(var, size=node_sizes[var],
                         name=node_names[var])
@@ -96,8 +85,18 @@ class GreedyOptimizer(Optimizer):
 
 
 
-class TamakiOptimizer(GreedyOptimizer):
+class TamakiOptimizer(OrderingOptimizer):
     def __init__(self, *args, wait_time=5, **kwargs):
+
+        """
+        Parameters
+        ----------
+        wait_time: int, double, optional
+                The time the optimize will spend on optimization.
+                The more time it takes, the more likely it results in
+                smaller tree widths and less memory consumption.
+        """
+
         super().__init__(*args, **kwargs)
         self.wait_time = wait_time
 
@@ -114,7 +113,7 @@ class TamakiOptimizer(GreedyOptimizer):
         self.treewidth = tw
         return peo, [tw]
 
-class TamakiExactOptimizer(GreedyOptimizer):
+class TamakiExactOptimizer(OrderingOptimizer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -135,4 +134,4 @@ class TamakiExactOptimizer(GreedyOptimizer):
 # an alias that makes sense
 
 
-DefaultOptimizer = GreedyOptimizer
+DefaultOptimizer = OrderingOptimizer

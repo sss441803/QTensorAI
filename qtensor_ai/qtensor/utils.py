@@ -10,6 +10,35 @@ from collections import defaultdict
 from typing import List, Tuple, Collection, TypeVar, Iterable
 
 
+
+def get_neighbours_peo_vars(old_graph, inplace=False):
+    if inplace:
+        graph = old_graph
+    else:
+        graph = copy.deepcopy(old_graph)
+    graph.remove_edges_from(list(nx.selfloop_edges(old_graph)))
+    peo = []
+    nghs = []
+
+    while graph.number_of_nodes():
+        ###start = time.time()
+        costs = np.array(list(
+            map(len, map(operator.itemgetter(1), graph.adjacency()))
+        ))
+
+        best_idx = np.argmin(costs)
+        best_degree = costs[best_idx]
+        best_node = list(graph.nodes())[best_idx]
+        del costs
+        peo.append(best_node)
+        nghs.append(best_degree)
+
+        eliminate_node_no_structure(graph, best_node)
+
+    return peo, nghs
+
+
+
 def bucket_indices(bucket):
     return merge_sets(set(x.indices) for x in bucket)
 
