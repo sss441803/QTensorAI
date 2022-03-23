@@ -1,7 +1,6 @@
 from .. import qtree
 from ..contraction_backends import ContractionBackend
 from .. import utils
-from loguru import logger as log
 
 class TensorNet:
     @property
@@ -54,5 +53,4 @@ class QtreeTensorNet(TensorNet):
         ignored_vars = self.bra_vars + self.ket_vars
         graph =  qtree.graph_model.buckets2graph(self.buckets,
                                                ignore_variables=ignored_vars)
-        log.debug('Line graph nodes: {}, edges: {}', graph.number_of_nodes(), graph.number_of_edges())
         return graph

@@ -61,7 +61,6 @@ class QNNComposer(ParallelComposer):
                 Has dimension (n_batch, n_qubits, n_layers). It stores rotation angles that will be learned.
         """
         
-        self.n_batch = data.shape[0]
         self.encoding_circuit(data)
         self.entangling_layer()
         for layer in range(self.n_layers):
@@ -133,7 +132,6 @@ class MetricLearningComposer(ParallelComposer):
                 Has dimension (n_batch, n_qubits, n_layers). It stores RY angles.
         """
 
-        self.n_batch = inputs.shape[0]
         for layer in range(self.n_layers):
             self.variational_layer(self.operators.XPhase, inputs)
             layer_zz_params = zz_params[:, :, layer]
