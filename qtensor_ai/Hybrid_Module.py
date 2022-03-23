@@ -69,7 +69,7 @@ class HybridModule(nn.Module):
 
 # Function for returning the contraction order. Searching if previously saved contraction orders exist.
 def circuit_optimization(circuit_name, tn, optimizer, composer):
-    begin_dir = './Saved_Contraction_Orders/' + type(optimizer).__name__ + '/' + composer.name()
+    begin_dir = os.path.expanduser('~') + '/Saved_Contraction_Orders/' + type(optimizer).__name__ + '/' + composer.name()
     end_dir = '/{}.pickle'.format(circuit_name)
     # If optimizer is Tamaki, search all folders with the higher or equal wait_time for matching circuit descriptions (n_qubits, variational_layers). This is because higher wait_time gives better optimization results.
     if isinstance(optimizer, TamakiOptimizer):
