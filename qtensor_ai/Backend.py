@@ -13,6 +13,7 @@
 
 from .qtensor.qtree.utils import num_to_alpha
 import numpy as np
+import gc
 
 def get_einsum_expr(idx1, idx2):
     """
@@ -127,6 +128,7 @@ class ParallelTorchBackend(ContractionBackend):
 
                 sliced_bucket.append(
                     tensor.copy(indices=indices_sliced, data=data))
+
             sliced_buckets.append(sliced_bucket)
 
         return sliced_buckets

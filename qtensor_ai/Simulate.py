@@ -2,6 +2,7 @@
 #Defining parallel simulator.                                          #
 ########################################################################
 from .qtensor.Simulate import QtreeSimulator
+from .Optimizer import bucket_elimination
 from .TensorNet import ParallelTensorNet
 from .qtensor import qtree
 
@@ -46,7 +47,11 @@ class ParallelSimulator(QtreeSimulator):
 
     def simulate_batch(self, qc, batch_vars=0, peo=None):
         self.prepare_buckets(qc, batch_vars, peo)
-        result = qtree.optimizer.bucket_elimination(
+        #result = qtree.optimizer.bucket_elimination(
+        #    self.buckets, self.backend.process_bucket,
+        #    n_var_nosum=len(self.tn.free_vars)
+        #)
+        result = bucket_elimination(
             self.buckets, self.backend.process_bucket,
             n_var_nosum=len(self.tn.free_vars)
         )
