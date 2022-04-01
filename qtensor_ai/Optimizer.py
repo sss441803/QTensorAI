@@ -4,6 +4,7 @@
 ###########################################################################
 import torch
 import itertools
+import qtensor_ai
 
 
 class ParallelVar(object):
@@ -91,7 +92,11 @@ def bucket_elimination(buckets, process_bucket_fn,
                     result *= tensor
                 else:
                     result = tensor
+            if qtensor_ai.forward_only_reuse_memory:
+                del tensor
+                torch.cuda.empty_cache()
         del bucket
+            
 
     # form a single list of the rest if any
     rest = list(itertools.chain.from_iterable(buckets[n_var_contract:]))

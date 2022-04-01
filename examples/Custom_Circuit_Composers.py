@@ -22,8 +22,6 @@ class QNNComposer(ParallelComposer):
             control_qubit = self.qubits[2*i+1]
             target_qubit = self.qubits[2*i+2]
             self.apply_gate(self.operators.cX, control_qubit, target_qubit)
-        control_qubit = self.qubits[-1]
-        target_qubit = self.qubits[0]
     
     def encoding_circuit(self, data):
         self.layer_of_Hadamards()

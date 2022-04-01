@@ -6,6 +6,7 @@ import time
 
 from Custom_Modules import QConv1D
 from qtensor_ai import TamakiOptimizer
+import qtensor_ai
 
 '''For more details on PyTorch CUDAGraph, see https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/
 The comments in this document are all relevant to our implementation only and we suggest not skipping them when reading.
@@ -60,11 +61,10 @@ def train(model, n_batch, in_channels, sequence_length, n_epochs):
     static_y = torch.rand(n_batch, 1).cuda()
 
     optimizer.zero_grad(set_to_none=True)
-    with torch.cuda.graph(train_graph):
-        static_y_hat = model.forward(static_x)
-        static_loss = loss_fn(static_y, static_y_hat)
-        static_loss.backward()
-        optimizer.step()
+    static_y_hat = model.forward(static_x)
+    static_loss = loss_fn(static_y, static_y_hat)
+    static_loss.backward()
+    optimizer.step()
     
     print('GPU memory allocated and reserved after tracing cuda graph:')
     print(torch.cuda.memory_allocated(), torch.cuda.memory_reserved())
@@ -84,7 +84,7 @@ def train(model, n_batch, in_channels, sequence_length, n_epochs):
 
 
 def main():
-    n_batch, in_channels, sequence_length, n_epochs = 10, 10, 20, 100
+    n_batch, in_channels, sequence_length, n_epochs = 10, 10, 20, 10
     out_channels, kernel_size, variational_layers, optimizer = 5, 4, 5, TamakiOptimizer(wait_time=30)
     model = nn.Sequential(QConv1D(in_channels, out_channels, kernel_size, variational_layers=variational_layers, optimizer=optimizer),
                             nn.ReLU(),
