@@ -309,6 +309,7 @@ class XPhase(ParallelParametricGate):
 class ParallelTorchFactory:
     pass
 
+ParallelTorchFactory.M = M
 ParallelTorchFactory.ZZ = ZZ
 ParallelTorchFactory.XPhase = XPhase
 ParallelTorchFactory.YPhase = YPhase
