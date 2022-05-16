@@ -76,9 +76,13 @@ class ParallelComposer(CircuitComposer):
         if len(self.final_circuit) != 0:
             for self_op, new_op in zip(self.final_circuit, new_circuit):
                 if isinstance(self_op, ParallelParametricGate):
-                    self_op._parameters['alpha'] = new_op._parameters['alpha']
+                    assert self_op._parameters.keys() == new_op._parameters.keys(), "The gate {} from the new circuit and the gate {} from the old circuit do not have the same parameters: {} and {}".format(new_op, self_op, self_op._parameters.keys(), new_op._parameters.keys())
+                    for parameter_key in new_op._parameters.keys():
+                        self_op.parameters[parameter_key] = new_op._parameters[parameter_key]
                 else:
+                    assert not isinstance(new_op, ParallelParametricGate), "The gate {} from the new circuit is parametric while the gate {} from the old circuit is non-parametric".format(new_op, self_op)
                     self_op._parameters['n_batch'] = new_op._parameters['n_batch']
+                
         else:
             '''Initializing circuit'''
             self.final_circuit = new_circuit
